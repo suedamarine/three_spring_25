@@ -1,0 +1,1035 @@
+---
+title: "Interim summary data"
+author: "Vinny Smith - Suaeda Marine LTD., Jon Moore - ASML LTD."
+date: "`r Sys.Date()`"
+output:
+  bookdown::word_document2:
+     fig_caption: yes
+     number_sections: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+
+```{r libraries}
+# import libraries
+library(tidyverse)
+library(broom)
+library(flextable)
+library(kableExtra)
+library(officer)
+library(knitr)
+library(lubridate)
+library(skimr)
+library(rcompanion)
+```
+
+``` {r importDataSets}
+
+# import data
+temp_cockle <- read.csv("data/temp_cockle.csv") # this is the raw data set for mass and counts
+
+temp_test <- read.csv("data/temp_test.csv")
+```
+
+``` {r dataMutation}
+
+# standardise dates
+temp.cockle <- temp_cockle %>%
+  mutate(Date = dmy(Date),
+         Block = case_match(Block,
+                             "Ishmaels" ~ "St Ishmaels",
+                             "LlanyBri" ~ "Llan y Bri",
+                             .default = Block))
+
+# tidy count data
+cockle.counts <- temp.cockle %>%
+  select(Stn, Block, Grid, Sampled, Y0Count, Y1Count, Y2Count, Y3Count) %>% 
+  mutate(total.count = Y0Count + Y1Count + Y2Count + Y3Count) %>% 
+  pivot_longer(c('Y0Count', 'Y1Count', 'Y2Count', 'Y3Count', 'total.count'), names_to = "year.class", values_to = "count")
+
+# tidy mass data
+cockle.mass <- temp.cockle %>%
+  select(Stn, Block, Grid, Sampled, Y0Weight, Y1Weight, Y2Weight, Y3Weight, harvestable, Substrata) %>%
+  mutate(total.weight = Y0Weight + Y1Weight + Y2Weight+ Y3Weight) %>%
+  pivot_longer(c('Y0Weight', 'Y1Weight', 'Y2Weight', 'Y3Weight', 'total.weight', 'harvestable'), names_to = "year.class", values_to = "mass")
+
+# check that twenty is not greater than total
+cockle.totals <- temp.cockle %>%
+  select(Stn, Block, Y0Weight, Y1Weight, Y2Weight, Y3Weight, harvestable) %>%
+  mutate(total = Y0Weight + Y1Weight + Y2Weight+ Y3Weight) %>%
+  filter(harvestable > total)
+
+temp.sizes <- temp_test %>%
+  pivot_longer(
+    cols = !length,
+    names_to = c("year.class", "Block"),
+    names_sep = "_",
+    values_to = "quantity"
+  ) %>%
+  mutate(Block = case_match(Block,
+                             "Ishmaels" ~ "St Ishmaels",
+                             "LlanyBri" ~ "Llan y Bri",
+                             .default = Block)) %>%
+  arrange(year.class, Block)
+
+write_csv(temp_test,"tabs/temp_test.csv")
+```
+
+``` {r surveyDates}
+
+# start date
+survey.dates <- temp.cockle %>%
+  summarise(start = min(Date, na.rm = TRUE),
+            end = max(Date, na.rm = TRUE))
+
+```
+
+``` {r parameters}
+
+three.rivers.grid <- 200
+```
+
+
+``` {r samplingEffort}
+
+stations.visited <- temp.cockle %>%
+  filter(Sampled=="Y") %>%
+  group_by(Block) %>%
+  summarise(stations.sampled = n()) %>%
+  mutate(Block = factor(Block,levels = c("Llan y Bri", "Llansteffan", "Ferryside", "St Ishmaels", "Gwendraeth", "Whiteford")),
+         area.hectares = stations.sampled * three.rivers.grid^2 / 10000) %>%
+  arrange(Block)
+ 
+# row_to_add <- stations.visited %>%
+#  summarise(Block = "Total",
+#          stations.sampled = sum(stations.sampled))
+
+# stations.visited <-stations.visited %>% 
+#  bind_rows(row_to_add) 
+
+# sum number of cockles sampled
+cockles.sampled <- temp.cockle %>%
+  summarise(across(c(Y0Count, Y1Count, Y2Count, Y3Count), \(x) sum(x,na.rm=TRUE))) %>%
+  mutate(total = rowSums(across(Y0Count:Y3Count), na.rm=TRUE))
+
+# sum of cockle mass sampled
+cockles.mass.sampled <- temp.cockle %>%
+  summarise(across(c(Y0Weight, Y1Weight, Y2Weight, Y3Weight), \(x) sum(x, na.rm = TRUE))) %>%
+  mutate(total = rowSums(across(Y0Weight:Y3Weight),na.rm = TRUE)) / 1000
+
+cockles.sample.pivot <- cockles.sampled %>%
+  pivot_longer(Y0Count:total, names_to = "cohort", values_to = "count") %>%
+  mutate(cohort = case_match(cohort,
+                             "Y0Count" ~ "Year 0",
+                             "Y1Count" ~ "Year 1",
+                             "Y2Count" ~ "Year 2",
+                             "Y3Count" ~ "Year 3",
+                             "total" ~ "Total",
+                             .default = cohort))
+
+cockles.mass.pivot <- cockles.mass.sampled %>%
+  pivot_longer(Y0Weight:total, names_to = "cohort", values_to = "mass") %>%
+  mutate(cohort = case_match(cohort,
+                             "Y0Weight" ~ "Year 0",
+                             "Y1Weight" ~ "Year 1",
+                             "Y2Weight" ~ "Year 2",
+                             "Y3Weight" ~ "Year 3",
+                             "total" ~ "Total",
+                             .default = cohort))
+
+sampling.effort <- cockles.sample.pivot %>%
+  left_join(cockles.mass.pivot, by = "cohort")
+
+write_csv(sampling.effort, "tabs/sampling_effort.csv")
+```
+
+
+``` {r groupwiseMeansCountsEstuary}
+
+# filter out any areas not surveyed
+# groupwise means for counts, filtered to remove NAs,if necessary remove or add year classes 
+
+counts.filtered <- cockle.counts %>% 
+  filter(year.class %in% c("Y1Count", "Y2Count", "Y3Count",
+                           "total.count"),
+         !(Block %in% c( "Whiteford")),
+         Sampled == "Y") %>%
+  filter(!is.na(count))
+
+
+
+estuary.total.count <- counts.filtered %>% 
+  filter(year.class == "total.count") %>%
+  summarise(total = sum(count)) %>%
+  slice_tail() %>%
+  pull()
+
+estuary.sampled <- counts.filtered %>% 
+  filter(year.class == "total.count") %>%
+  summarise(total = sum(Sampled == "Y")) %>%
+  slice_tail() %>%
+  pull()
+
+
+# perform the groupwisemean selecting 10000 replicates and Bca
+count.groupwise.estuary <- groupwiseMean(count ~ year.class + Grid, data = counts.filtered, conf = 0.95, digits = 3, R = 10000, boot = TRUE, traditional = FALSE, normal = FALSE, basic = FALSE, percentile = FALSE, bca = TRUE)
+
+# calculate count confidence intervals per block
+count.confidence.intervals.estuary <- count.groupwise.estuary %>%  
+  mutate(count.lower =  Bca.lower * 10 * Grid^2 * n) %>%
+  mutate(count.upper = Bca.upper * 10 * Grid^2 * n) %>%
+  mutate(total.mean = Mean * 10 * Grid^2*n)
+
+# Calculate count confidence intervals per square metre
+count.confidence.intervals.metre <- count.groupwise.estuary %>%  
+  mutate(mean.metre = Mean * 10,
+         count.lower =  Bca.lower * 10,
+         count.upper = Bca.upper * 10,
+         total.boot.mean = Boot.mean * 10,
+         year.class = case_match(year.class,
+                             "Y0Count" ~ "Year 0",
+                             "Y1Count" ~ "Year 1",
+                             "Y2Count" ~ "Year 2",
+                             "Y3Count" ~ "Year 3+",
+                             "total.count" ~ "Total",
+                             .default = year.class),
+         year.class = factor(year.class, levels = c("Year 0","Year 1","Year 2","Year 3+","Total")),
+         percent = mean.metre / (estuary.total.count * 10 / estuary.sampled) * 100) %>%
+  arrange(year.class) %>%
+  relocate(mean.metre, .after = Mean) %>%
+  relocate(percent, .after = mean.metre) %>%
+  relocate(total.boot.mean, .before = count.lower) %>%
+  select(-c(Grid, n, Mean, Boot.mean, Conf.level, Bca.lower, Bca.upper))
+
+
+
+# write file to csv
+write.csv(count.confidence.intervals.metre, "tabs/count_intervals_ordered_estuary.csv")
+
+```
+
+
+
+``` {r groupwiseMeansMassEstuary}
+
+# groupwise means for mass, filtered to remove NAs,if necessary remove or add year classes
+
+mass.filtered.beds <- cockle.mass %>% 
+  filter(year.class %in% c("Y1Weight", "Y2Weight", "Y3Weight",
+                           "total.weight", "harvestable"),
+         !(Block %in% c("Whiteford")),
+         Sampled == "Y") %>%
+  filter(!is.na(mass))
+
+estuary.total.mass <- mass.filtered.beds %>% 
+  filter(year.class == "total.weight") %>%
+  summarise(total = sum(mass)) %>%
+  slice_tail() %>%
+  pull()
+
+# perform the groupwisemean selecting 10000 replicates and Bca
+mass.groupwise.estuary <- groupwiseMean(mass ~ year.class + Grid, data = mass.filtered.beds, conf = 0.95, digits = 3, R = 10000, boot = TRUE, traditional = FALSE, normal = FALSE, basic = FALSE, percentile = FALSE, bca = TRUE)
+
+# calculate mass confidence intervals per block
+mass.confidence.intervals.estuary <- mass.groupwise.estuary %>%  
+  mutate(total.mean = Mean * 0.01 * Grid^2 * n /1000,
+         mass.lower =  Bca.lower * 0.01 * Grid^2 * n / 1000,
+         mass.upper = Bca.upper * 0.01 * Grid^2 * n / 1000,
+         total.boot.mean = Mean * 0.01 * Grid^2 * n / 1000,
+         year.class = case_match(year.class,
+                             "Y0Weight" ~ "Year 0",
+                             "Y1Weight" ~ "Year 1",
+                             "Y2Weight" ~ "Year 2",
+                             "Y3Weight" ~ "Year 3+",
+                             "harvestable" ~ "≥ 21mm",
+                             "total.weight" ~ "Total",
+                             .default = year.class),
+         year.class = factor(year.class, levels = c("Year 0","Year 1","Year 2","Year 3+", "Total", "≥ 21mm"))) %>%
+  arrange(year.class) %>%
+  mutate(percent = Mean / (estuary.total.mass/estuary.sampled) * 100) %>%
+  relocate(percent, .after = total.mean) %>%
+  relocate(total.boot.mean, .after = percent) %>%
+  select(-c(Grid, n, Mean, Boot.mean, Conf.level, Bca.lower, Bca.upper))
+
+
+# write file to csv
+write.csv(mass.confidence.intervals.estuary, "tabs/mass_intervals_ordered_estuary.csv")
+
+```
+
+
+``` {r groupwiseMeansCountBeds}
+
+# groupwise means for counts, filtered to remove NAs,if necessary remove or add year classes 
+
+summary.counts.combined <- counts.filtered %>%
+  mutate(count.sum = count*10*Grid^2) %>%
+  group_by(year.class, Block) %>%
+  summarize(count.totals = sum(count.sum, na.rm = TRUE))
+
+# perform the groupwisemean selecting 10000 replicates and Bca
+count.groupwise.beds <- groupwiseMean(count ~ year.class + Block + Grid, data = counts.filtered, conf = 0.95, digits = 3, R = 10000, boot = TRUE, traditional = FALSE, normal = FALSE, basic = FALSE, percentile = FALSE, bca = TRUE)
+
+# calculate count confidence intervals per block
+count.confidence.intervals.beds <- count.groupwise.beds %>%  
+  mutate(count.lower =  Bca.lower * 10 * Grid^2 * n) %>%
+  mutate(count.upper = Bca.upper * 10 * Grid^2 * n) %>%
+  mutate(total.mean = Mean * 10 * Grid^2 * n)
+
+count.intervals.beds.metre <- count.groupwise.beds %>%
+  mutate(total.mean = Mean * 10,
+         total.bootstrap.mean = Boot.mean * 10,
+         count.lower =  Bca.lower * 10,
+         count.upper = Bca.upper * 10,
+         year.class = case_match(year.class,
+                             "Y0Count" ~ "Year 0",
+                             "Y1Count" ~ "Year 1",
+                             "Y2Count" ~ "Year 2",
+                             "Y3Count" ~ "Year 3+",
+                             "total.count" ~ "Total",
+                             .default = year.class),
+         year.class = factor(year.class, levels = c("Year 0","Year 1","Year 2","Year 3+","Total")),
+         Block = factor(Block,levels = c("Llan y Bri", "Llansteffan", "Ferryside", "St Ishmaels", "Gwendraeth", "Whiteford"))) %>%
+  arrange(year.class, Block) %>%
+  select(-c(Grid, n, Mean, Boot.mean, Conf.level, Bca.lower, Bca.upper))
+
+
+# write file to csv
+write.csv(count.intervals.beds.metre, "tabs/count_intervals_ordered_beds.csv")
+
+```
+
+
+``` {r groupwiseMeansMassBeds}
+
+
+# perform the groupwisemean selecting 10000 replicates and Bca
+mass.groupwise.beds <- groupwiseMean(mass ~ year.class + Block + Grid, data = mass.filtered.beds, conf = 0.95, digits = 3, R = 10000, boot = TRUE, traditional = FALSE, normal = FALSE, basic = FALSE, percentile = FALSE, bca = TRUE)
+
+# calculate mass confidence intervals per block
+mass.confidence.intervals.beds <- mass.groupwise.beds %>%  
+  mutate(mass.lower =  Bca.lower * 0.01 * Grid^2 * n) %>%
+  mutate(mass.upper = Bca.upper * 0.01 * Grid^2 * n) %>%
+  mutate(total.mean = Mean * 0.01 * Grid^2 * n)
+
+mass.intervals.beds.metre <- mass.groupwise.beds %>%
+  mutate(total.mean = Mean * 0.01 * Grid^2 * n / 1000,
+         total.boot.mean = Boot.mean * 0.01 * Grid^2 * n / 1000,
+         mass.lower =  Bca.lower * 0.01 * Grid^2 * n / 1000,
+         mass.upper = Bca.upper * 0.01 * Grid^2 * n / 1000,
+         year.class = case_match(year.class,
+                             "Y0Weight" ~ "Year 0",
+                             "Y1Weight" ~ "Year 1",
+                             "Y2Weight" ~ "Year 2",
+                             "Y3Weight" ~ "Year 3+",
+                             "harvestable" ~ "≥ 21mm",
+                             "total.weight" ~ "Total",
+                             .default = year.class),
+         year.class = factor(year.class, levels = c("Year 0","Year 1","Year 2","Year 3+", "Total", "≥ 21mm")),
+         Block = factor(Block,levels = c("Llan y Bri", "Llansteffan", "Ferryside", "St Ishmaels", "Gwendraeth", "Whiteford"))) %>%
+  arrange(year.class, Block) %>%
+  select(-c(Grid, n, Mean, Boot.mean, Conf.level, Bca.lower, Bca.upper))
+
+
+# write file to csv
+write.csv(mass.intervals.beds.metre, "tabs/mass_intervals_ordered_beds.csv")
+
+```
+
+``` {r groupwiseMeansSubstrata}
+
+mass.filtered.substrata <- cockle.mass %>% 
+  filter(year.class %in% c("Y1Weight", "Y2Weight", "Y3Weight",
+                           "total.weight", "harvestable"),
+         !(Block %in% c("Whiteford")),
+         Sampled == "Y",
+         !(Substrata %in%c("saltmarsh", "rocks", "channel", "mud"))) %>%
+  filter(!is.na(mass))
+
+# perform the groupwisemean selecting 10000 replicates and Bca
+mass.groupwise.substrata <- groupwiseMean(mass ~ year.class + Substrata, data = mass.filtered.substrata, conf = 0.95, digits = 3, R = 10000, boot = TRUE, traditional = FALSE, normal = FALSE, basic = FALSE, percentile = FALSE, bca = TRUE)
+
+# calculate mass confidence intervals per block
+mass.confidence.intervals.substrata <- mass.groupwise.substrata %>%  
+  mutate(mass.lower.metre =  Bca.lower * 0.01) %>%
+  mutate(mass.upper.metre = Bca.upper * 0.01) %>%
+  mutate(total.mean.metre = Mean * 0.01)
+
+mass.intervals.substrata.metre <- mass.groupwise.substrata %>%
+  mutate(mass.lower.metre = Bca.lower * 0.01,
+         mass.upper.metre = Bca.upper * 0.01,
+         total.mean.metre = Mean * 0.01,
+         year.class = case_match(year.class,
+                             "Y0Weight" ~ "Year 0",
+                             "Y1Weight" ~ "Year 1",
+                             "Y2Weight" ~ "Year 2",
+                             "Y3Weight" ~ "Year 3+",
+                             "harvestable" ~ "≥ 21mm",
+                             "total.weight" ~ "Total",
+                             .default = year.class),
+         year.class = factor(year.class, levels = c("Year 0","Year 1","Year 2","Year 3+", "Total", "≥ 21mm")),
+         Substrata = factor(Substrata,levels = c("mud", "muddy_sand", "fine_sand", "sand"))) %>%
+  select(-c(Bca.lower, Bca.upper, Mean, Boot.mean, Conf.level)) %>%
+  arrange(year.class, Substrata) %>%
+  rename(c("Year Class" = "year.class", "CI Lower density kg/m2" = "mass.lower.metre", "CI upper density kg/m2" = "mass.upper.metre", "Mean density kg/m2" = "total.mean.metre"))
+```
+
+
+
+``` {r densityHistogramData}
+
+# produce new vectors for individual sizes
+temp.length <- rep(temp.sizes$length, times = temp.sizes$quantity) 
+temp.class <- rep(temp.sizes$year.class, times = temp.sizes$quantity)
+temp.block <- rep(temp.sizes$Block, times = temp.sizes$quantity)
+
+# new data frame for plots
+temp.sizes.df <- data.frame(temp.length, temp.class, temp.block)
+
+# calculate medians for each year class and block
+mu <- temp.sizes.df %>%
+  filter(!temp.block=="Whiteford") %>%
+  group_by(temp.class, temp.block) %>%
+  summarize(grp.mean = mean(temp.length)) %>%
+  mutate(temp.class = case_match(temp.class,
+                             "Year0" ~ "Year 0",
+                             "Year1" ~ "Year 1",
+                             "Year2" ~ "Year 2+",
+                             .default = temp.class),
+         temp.class = factor(temp.class, levels = c("Year 0","Year 1","Year 2+")),
+         temp.block = factor(temp.block,levels = c("Llan y Bri", "Llansteffan", "Ferryside", "St Ishmaels", "Gwendraeth", "Whiteford"))) %>%
+  arrange(temp.class, temp.block)
+
+# write table to csv file
+write.csv(mu, "tabs/mu.csv")
+
+
+# plot 
+density.histogram.beds.plot <- temp.sizes.df %>%
+  filter(!temp.block=="Whiteford") %>%
+  mutate(temp.block = factor(temp.block,levels = c("Llan y Bri", "Llansteffan", "Ferryside", "St Ishmaels", "Gwendraeth", "Whiteford"))) %>%
+  ggplot(aes(x=temp.length, color=temp.class, fill=temp.class, position="dodge")) +
+  geom_histogram(aes(y=..density..), binwidth = 1.0, alpha=0.4, position="identity") +
+  geom_density(alpha=0.2, bw = 0.75) +
+  geom_vline(data = mu, aes(xintercept=grp.mean, colour = temp.class), linetype = "dashed") +
+  scale_color_manual(values=c(year0 ="#a6611a",year1="#dfc27d",year2="#80cdc1"),
+                     breaks = c("Year0", "Year1", "Year2"),
+                     guide = "none")  +
+  scale_fill_manual(values=c(Year0="#a6611a",Year1="#dfc27d",Year2="#80cdc1"),
+                    breaks = c("Year0", "Year1", "Year2"),
+                    name = "Class",labels = c("Year 0","Year 1","Year 2")) +
+  theme(legend.position="top") + labs(title="", x="Size mm", y = "Frequency") +
+  theme_minimal() +
+  facet_wrap(~temp.block, ncol = 1)
+
+ggsave("plots/density_histogram.pdf", 
+       plot = density.histogram.beds.plot, 
+       device = "pdf",
+       width = 8,
+       height = 10,
+       dpi = 200)
+```
+
+
+``` {r gwendraethFrequencyDistribution}
+
+gwendraeth.sampled <- stations.visited %>%
+  filter(Block == "Gwendraeth") %>%
+  select(stations.sampled) %>%
+  slice_tail() %>%
+  pull()
+
+gwendraeth.count <- cockle.counts %>% 
+  filter(Block == "Gwendraeth" & year.class == "total.count" & !is.na(count)) %>% summarise(total = sum(count)) %>%
+  slice_tail() %>%
+  pull()
+
+gwendraeth.total <- gwendraeth.count * 10 * 200^2
+
+gwendraeth.bird.allowance <- gwendraeth.sampled * three.rivers.grid^2 * 50
+
+gwendraeth.sizes <- temp.sizes %>%
+  filter(Block == "Gwendraeth")
+
+# it may be necessary to strictly enforce a specific number of stations for the fishery bed - to ensure a consistent quantity of cockles available for the bird model
+
+gwendraeth.frequency <- data.frame(length = rep(c(gwendraeth.sizes$length), times = gwendraeth.sizes$quantity)) %>%
+  count(length) %>%         
+  mutate(mass = 0.0002118724 * length^3.1745757084,
+         proportion = prop.table(n),
+         cumulative.frequency = cumsum(proportion),
+         rev.cum.freq =  rev(cumsum(rev(proportion))),
+         count.metre = proportion * gwendraeth.count * 10 / gwendraeth.sampled,
+         mass.metre = mass * count.metre  / 1000,
+         rev.cum.count.metre = rev(cumsum(rev(count.metre))),
+         mass.extrapolation = mass.metre * gwendraeth.sampled * three.rivers.grid^2 / 1000,
+         reverse.cumulative.mass = rev(cumsum(rev(mass.extrapolation))),
+         count.leaving.for.birds = proportion * (gwendraeth.total - gwendraeth.bird.allowance),
+         mass.remaining = 0.0002118724 * length^3.1745757084 * count.leaving.for.birds /1e6,
+         remaining.cumulative.mass = rev(cumsum(rev(mass.remaining))))
+
+write_csv(gwendraeth.frequency, "tabs/gwendraeth_frequency.csv")
+
+# NOTE. select the appropriate value for length below (probably >20 for 3Rivers and >14 for Burry)
+gwendraeth.harvestable.biomass <-gwendraeth.frequency %>%
+  summarise(harvestble.mass = sum(mass.extrapolation[length>20]))
+
+gwendraeth.harvestable.biomass.leaving <-gwendraeth.frequency %>%
+  summarise(harvestble.mass = sum(mass.remaining[length>20]))
+
+```
+
+
+```{undefined eval=FALSE, include=FALSE}
+
+gwendraeth.frequency %>%  slice(c(1,min(which(gwendraeth.frequency$length > 20)))) %>%
+  select(c(reverse.cumulative.mass,remaining.cumulative.mass)) %>%
+  mutate(category = c("Total", "MLS")) %>%
+  relocate(category, .before = reverse.cumulative.mass) %>%
+  flextable() %>%
+  set_header_labels(category = "", reverse.cumulative.mass = "Mass (Tonnes)", remaining.cumulative.mass = "Mass (Tonnes after deduction)", total.mean = "Mean", count.lower = "Lower CI", count.upper = "Upper CI") %>%
+  colformat_double(digits = 0) %>%
+  autofit() %>%
+  fit_to_width(7.5) %>%
+set_caption(caption = as_paragraph("Estimated cockle biomass and harvestable volume (at MLS of 21mm) at Gwendraeth based on cockle size - frequency"), 
+  style = "Table Caption", 
+  autonum = run_autonum(seq_id = "tab"))
+```
+
+
+``` {r stIshmaelsFrequencyDistribution}
+
+ishmaels.sampled <- stations.visited %>%
+  filter(Block == "St Ishmaels") %>%
+  select(stations.sampled) %>%
+  slice_tail() %>%
+  pull()
+
+ishmaels.count <- cockle.counts %>% 
+  filter(Block == "St Ishmaels" & year.class == "total.count" & !is.na(count)) %>% summarise(total = sum(count)) %>%
+  slice_tail() %>%
+  pull()
+
+ishmaels.total <- ishmaels.count * 10 * 200^2
+
+ishmaels.bird.allowance <- ishmaels.sampled * three.rivers.grid^2 * 50
+
+
+ishmaels.sizes <- temp.sizes %>%
+  filter(Block == "St Ishmaels")
+
+# it may be necessary to strictly enforce a specific number of stations for the fishery bed - to ensure a consistent quantity of cockles available for the bird model
+
+ishmaels.frequency <- data.frame(length = rep(c(ishmaels.sizes$length), times = ishmaels.sizes$quantity)) %>%
+  count(length) %>%         
+  mutate(mass = 0.0002118724 * length^3.1745757084,
+         proportion = prop.table(n),
+         cumulative.frequency = cumsum(proportion),
+         rev.cum.freq =  rev(cumsum(rev(proportion))),
+         count.metre = proportion * ishmaels.count * 10 / ishmaels.sampled,
+         mass.metre = mass * count.metre  / 1000,
+         rev.cum.count.metre = rev(cumsum(rev(count.metre))),
+         mass.extrapolation = mass.metre * ishmaels.sampled * three.rivers.grid^2 / 1000,
+         reverse.cumulative.mass = rev(cumsum(rev(mass.extrapolation))),
+         count.leaving.for.birds = proportion * (ishmaels.total - ishmaels.bird.allowance),
+         mass.remaining = 0.0002118724 * length^3.1745757084 * count.leaving.for.birds /1e6,
+         remaining.cumulative.mass = rev(cumsum(rev(mass.remaining))))
+
+write_csv(ishmaels.frequency, "tabs/ishmaels_frequency.csv")
+
+# NOTE. select the appropriate value for length below (probably >20 for 3Rivers and >14 for Burry)
+ishmaels.harvestable.biomass <-ishmaels.frequency %>%
+  summarise(harvestble.mass = sum(mass.extrapolation[length>18]))
+
+ishmaels.harvestable.biomass.leaving <-ishmaels.frequency %>%
+  summarise(harvestble.mass = sum(mass.remaining[length>18]))
+
+```
+
+
+``` {r ferrysideFrequencyDistribution}
+
+ferryside.sampled <- stations.visited %>%
+  filter(Block == "Ferryside") %>%
+  select(stations.sampled) %>%
+  slice_tail() %>%
+  pull()
+
+ferryside.count <- cockle.counts %>% 
+  filter(Block == "Ferryside" & year.class == "total.count" & !is.na(count)) %>% summarise(total = sum(count)) %>%
+  slice_tail() %>%
+  pull()
+
+ferryside.total <- ferryside.count * 10 * 200^2
+
+ferryside.bird.allowance <- ferryside.sampled * three.rivers.grid^2 * 50
+
+
+ferryside.sizes <- temp.sizes %>%
+  filter(Block == "Ferryside")
+
+# it may be necessary to strictly enforce a specific number of stations for the fishery bed - to ensure a consistent quantity of cockles available for the bird model
+
+ferryside.frequency <- data.frame(length = rep(c(ferryside.sizes$length), times = ferryside.sizes$quantity)) %>%
+  count(length) %>%         
+  mutate(mass = 0.0002118724 * length^3.1745757084,
+         proportion = prop.table(n),
+         cumulative.frequency = cumsum(proportion),
+         rev.cum.freq =  rev(cumsum(rev(proportion))),
+         count.metre = proportion * ferryside.count * 10 / ferryside.sampled,
+         mass.metre = mass * count.metre  / 1000,
+         rev.cum.count.metre = rev(cumsum(rev(count.metre))),
+         mass.extrapolation = mass.metre * ferryside.sampled * three.rivers.grid^2 / 1000,
+         reverse.cumulative.mass = rev(cumsum(rev(mass.extrapolation))),
+         count.leaving.for.birds = proportion * (ferryside.total - ferryside.bird.allowance),
+         mass.remaining = 0.0002118724 * length^3.1745757084 * count.leaving.for.birds /1e6,
+         remaining.cumulative.mass = rev(cumsum(rev(mass.remaining))))
+
+write_csv(ferryside.frequency, "tabs/ferryside_frequency.csv")
+
+# NOTE. select the appropriate value for length below (probably >20 for 3Rivers and >14 for Burry)
+ferryside.harvestable.biomass <-ferryside.frequency %>%
+  summarise(harvestble.mass = sum(mass.extrapolation[length>18]))
+
+ferryside.harvestable.biomass.leaving <-ferryside.frequency %>%
+  summarise(harvestble.mass = sum(mass.remaining[length>18]))
+
+```
+
+
+``` {r llansteffanFrequencyDistribution}
+
+llansteffan.sampled <- stations.visited %>%
+  filter(Block == "Llansteffan") %>%
+  select(stations.sampled) %>%
+  slice_tail() %>%
+  pull()
+
+llansteffan.count <- cockle.counts %>% 
+  filter(Block == "Llansteffan" & year.class == "total.count" & !is.na(count)) %>% summarise(total = sum(count)) %>%
+  slice_tail() %>%
+  pull()
+
+llansteffan.total <- llansteffan.count * 10 * 200^2
+
+llansteffan.bird.allowance <- llansteffan.sampled * three.rivers.grid^2 * 50
+
+llansteffan.sizes <- temp.sizes %>%
+  filter(Block == "Llansteffan")
+
+# it may be necessary to strictly enforce a specific number of stations for the fishery bed - to ensure a consistent quantity of cockles available for the bird model
+
+llansteffan.frequency <- data.frame(length = rep(c(llansteffan.sizes$length), times = llansteffan.sizes$quantity)) %>%
+  count(length) %>%         
+  mutate(mass = 0.0002118724 * length^3.1745757084,
+         proportion = prop.table(n),
+         cumulative.frequency = cumsum(proportion),
+         rev.cum.freq =  rev(cumsum(rev(proportion))),
+         count.metre = proportion * llansteffan.count * 10 / llansteffan.sampled,
+         mass.metre = mass * count.metre  / 1000,
+         rev.cum.count.metre = rev(cumsum(rev(count.metre))),
+         mass.extrapolation = mass.metre * llansteffan.sampled * three.rivers.grid^2 / 1000,
+         reverse.cumulative.mass = rev(cumsum(rev(mass.extrapolation))),
+         count.leaving.for.birds = proportion * (llansteffan.total - llansteffan.bird.allowance),
+         mass.remaining = 0.0002118724 * length^3.1745757084 * count.leaving.for.birds /1e6,
+         remaining.cumulative.mass = rev(cumsum(rev(mass.remaining))))
+
+write_csv(llansteffan.frequency, "tabs/llansteffan_frequency.csv")
+
+# NOTE. select the appropriate value for length below (probably >20 for 3Rivers and >14 for Burry)
+llansteffan.harvestable.biomass <-llansteffan.frequency %>%
+  summarise(harvestble.mass = sum(mass.extrapolation[length>18]))
+
+llansteffan.harvestable.biomass.leaving <-llansteffan.frequency %>%
+  summarise(harvestble.mass = sum(mass.remaining[length>18]))
+
+```
+
+
+
+``` {r llanyBriFrequencyDistribution}
+
+llanybri.sampled <- stations.visited %>%
+  filter(Block == "Llan y Bri") %>%
+  select(stations.sampled) %>%
+  slice_tail() %>%
+  pull()
+
+llanybri.count <- cockle.counts %>% 
+  filter(Block == "Llan y Bri" & year.class == "total.count" & !is.na(count)) %>% summarise(total = sum(count)) %>%
+  slice_tail() %>%
+  pull()
+
+llanybri.total <- llanybri.count * 10 * 200^2
+
+llanybri.bird.allowance <- llanybri.sampled * three.rivers.grid^2 * 50
+
+
+llanybri.sizes <- temp.sizes %>%
+  filter(Block == "Llan y Bri")
+
+# it may be necessary to strictly enforce a specific number of stations for the fishery bed - to ensure a consistent quantity of cockles available for the bird model
+
+llanybri.frequency <- data.frame(length = rep(c(llanybri.sizes$length), times = llanybri.sizes$quantity)) %>%
+  count(length) %>%         
+  mutate(mass = 0.0002118724 * length^3.1745757084,
+         proportion = prop.table(n),
+         cumulative.frequency = cumsum(proportion),
+         rev.cum.freq =  rev(cumsum(rev(proportion))),
+         count.metre = proportion * llanybri.count * 10 / llanybri.sampled,
+         mass.metre = mass * count.metre  / 1000,
+         rev.cum.count.metre = rev(cumsum(rev(count.metre))),
+         mass.extrapolation = mass.metre * llanybri.sampled * three.rivers.grid^2 / 1000,
+         reverse.cumulative.mass = rev(cumsum(rev(mass.extrapolation))),
+         count.leaving.for.birds = proportion * (llanybri.total - llanybri.bird.allowance),
+         mass.remaining = 0.0002118724 * length^3.1745757084 * count.leaving.for.birds /1e6,
+         remaining.cumulative.mass = rev(cumsum(rev(mass.remaining))))
+
+write_csv(llanybri.frequency, "tabs/llanybri_frequency.csv")
+
+# NOTE. select the appropriate value for length below (probably >20 for 3Rivers and >14 for Burry)
+llanybri.harvestable.biomass <-llanybri.frequency %>%
+  summarise(harvestble.mass = sum(mass.extrapolation[length>20]))
+
+llanybri.harvestable.biomass.leaving <-llanybri.frequency %>%
+  summarise(harvestble.mass = sum(mass.remaining[length>20]))
+
+```
+
+``` {r summaryData}
+
+
+summary.sizes <- temp.sizes.df %>% 
+  group_by(temp.block) %>% 
+  summarise(mean.length = mean(temp.length)) %>%
+  rename(Block = temp.block) %>%
+  mutate(Block = factor(Block,levels = c("Llan y Bri", "Llansteffan", "Ferryside", "St Ishmaels", "Gwendraeth", "Whiteford"))) %>%
+  arrange(Block)
+
+cockle.mass.summary <- cockle.mass %>% 
+  filter(year.class == "total.weight" & !is.na(mass)) %>% group_by(Block) %>%
+  summarise(total.mass = sum(mass)) %>%
+  mutate(Block = factor(Block,levels = c("Llan y Bri", "Llansteffan", "Ferryside", "St Ishmaels", "Gwendraeth", "Whiteford"))) %>%
+  arrange(Block)
+
+cockle.count.summary <- cockle.counts %>% 
+  filter(year.class == "total.count" & !is.na(count)) %>% group_by(Block) %>%
+  summarise(total.count = sum(count)) %>%
+  mutate(Block = factor(Block,levels = c("Llan y Bri", "Llansteffan", "Ferryside", "St Ishmaels", "Gwendraeth", "Whiteford"))) %>%
+  arrange(Block)
+
+summary.intervals <- mass.intervals.beds.metre %>%
+  filter(year.class == "Total") %>%
+  select(c(Block, total.mean, mass.lower, mass.upper))
+
+summary.table <- summary.sizes %>%
+  left_join(., cockle.mass.summary, by='Block') %>%
+  left_join(., cockle.count.summary, by='Block') %>% 
+  mutate(mean.mass = total.mass / total.count) %>%
+  left_join(., stations.visited, by='Block') %>%
+  mutate(count.metre = total.count/stations.sampled * 10,
+         mass.metre = total.mass * 10 / 1000 / stations.sampled) %>%
+  left_join(., summary.intervals, by='Block')
+  
+
+
+
+```
+
+# Introduction
+
+Interim summary data prior to release of full report. Interim data provides a summary of the results of a cockle stock assessment survey carried out within the Three Rivers Estuary from `r survey.dates[1,1]` to `r survey.dates[1,2]`. It includes estimation of counts and wet weights of cockles from five defined beds and provides data to be used by Welsh Government for the calculation of Total Allowable Catch (TAC) and to support other fishery and site management actions.
+\n
+The five defined cockle beds are (clockwise): Llanybri, Llansteffan, Ferryside, St Ishmael and Gwendraeth. Maps and descriptions of the defined cockle beds will be given in the full report.
+
+# Summary of Methodology
+
+The surveys are based on grids of stations that cover all likely cockle habitat in the Three Rivers. The distance between the stations is 200m in the Three Rivers (each station therefore representing 40,000 m2 = 4 hectare) and each station is identified by a unique alphanumeric code. Table \@ref(tab:stationsVisitedTable) gives the number of sampled stations and total area for each bed.
+Note: The surveys are subject to strict health and safety procedures and procedural protocols are applied to minimise bias at all stages of sampling and processing. A detailed description of the methodology is given in the full report.
+
+## Sampling
+
+The surveys are carried out during periods of low tides by two pairs of surveyors who are assigned blocks of stations. GPS is used to navigate to each station in turn, where a single, randomly placed, sample of cockles is taken using a 0.1m2 quadrat, rake/trowel and 4mm mesh sieve. The sample is placed into a plastic bag with a label to identify the station. A record of the sampling, including number of cockles (or absence) and notes on the substratum is written on a pre-prepared form. If a station is inaccessible (e.g. within a deep channel) then the inaccessible distance is recorded. If the nearest accessible habitat is considered representative of the inaccessible station then a replacement sample may be taken; if not, then the station is recorded as unsampled.
+
+## Sample Processing - Stage 1
+
+The samples are processed on the same day they are taken, and one bed at a time. Processing equipment includes sorting trays, vernier calipers, portable digital balances and pre-prepared recording forms. Shell lengths are measured to the nearest 1 mm and shell weights are measured to the nearest 1 gram. Any sample weighing less than 1 gram (e.g. small numbers of Year 0 cockles) is recorded as 0.5 gram. Year class is according to growth rings on the cockle shell. The following are recorded for each sample: 
+
+* Date
+* Bed name
+* Station code
+* Total weight of large cockles (>21mm for the Three Rivers)
+* Total count of Year 0 cockles
+* Total mass of Year 0 cockles
+* Total count of Year 1 cockles
+* Total mass of Year 1 cockles
+* Total count of Year 2 cockles
+* Total mass of Year 2 cockles
+* Total count of Year 3+ cockles
+* Total mass of Year 3+ cockles
+
+## Sample Processing - Stage 2
+
+Size frequency measurements are then carried out, by bed and year class, on the accumulated cockles from all samples. Sub-sampling is applied if the number of cockles, for a single year class and bed, is >200. Each cockle is measured with vernier calipers (on the longest axis, to the nearest 1 mm) while another surveyor records the measurements using a tally system on a pre-prepared form. The cockle sizes can range from 4 to 40 mm. The following are recorded for each bed:
+
+* Bed name
+* Year class
+* Number of cockles of each size class
+
+## Data Entry and Processing
+
+All data are entered into a pre-designed Excel workbook and put through a rigorous series of verification procedures to ensure that there are no inconsistencies between the field records, the shellfish measurements and the sub-sample records.
+Where cockles were sub-sampled during size frequency processing, the data from that bed and year class are automatically multiplied up to produce calculated totals for each size class.
+The data sets are then imported into the statistical analysis software R (version 4.2.2) and the results in the next section are exported.
+
+# Results
+
+## Survey Sampling Effort
+
+``` {r stationsVisitedTable, ft.align="center"}
+
+stations.visited %>%
+  flextable() %>%
+  set_header_labels(Block = "Block", stations.sampled = "Stations Sampled", area.hectares = "Bed Area (hectares)") %>%
+  colformat_double(digits = 0) %>%
+  autofit() %>%
+  fit_to_width(7.5) %>%
+set_caption(caption = as_paragraph("Number of sampled stations within each defined bed and calculated bed area"), 
+  style = "Table Caption", 
+  autonum = run_autonum(seq_id = "tab", bkm = "tab1"))
+```
+
+
+``` {r samplingEffortTable, ft.align="center"}
+
+sampling.effort %>%
+  flextable() %>%
+  set_header_labels(cohort = "Cohort", count = "Count", mass = "Mass (kg)") %>%
+  colformat_double(digits = 0) %>%
+  colformat_double(j = "mass", digits = 3) %>%
+  autofit() %>%
+  fit_to_width(7.5) %>%
+set_caption(caption = as_paragraph("Count and mass of sampled cockles, by year class"), 
+  style = "Table Caption", 
+  autonum = run_autonum(seq_id = "tab"))
+```
+
+## Cockle counts and weights – Three Rivers (all beds combined)
+
+Table \@ref(tab:groupwiseMeansCountEstuaryTable) shows estimated mean cockle density, by year class, for the combined estuary. Two estimates are provided: the arithmetic mean, calculated directly from the count data, and the bootstrap mean, including calculation of 95% confidence intervals. The bootstrap mean and confidence intervals are calculated using a bias-corrected and accelerated (BCa) bootstrap resampling technique (resampled 10,000 times). The difference between the arithmetic and bootstrap mean values is an artifact of the resampling technique and the trivial difference between them provides additional confidence in the estimates.
+
+``` {r groupwiseMeansCountEstuaryTable, ft.align="center"}
+
+count.confidence.intervals.metre %>%
+  flextable() %>%
+  set_header_labels(year.class = "Year class", mean.metre = ("Arithmetic mean density/ m2"), percent = "Percentage", total.boot.mean = "Bootstrap mean density/ m2", count.lower = "Lower CI density/ m2", count.upper = "Upper CI density/ m2") %>%
+  colformat_double(digits = 0) %>%
+  autofit() %>%
+  fit_to_width(7.5) %>%
+set_caption(caption = as_paragraph("Summary of estimated cockle density (mean and 95% confidence intervals (BCa)) - combined estuary totals, by year class"), 
+  style = "Table Caption", 
+  autonum = run_autonum(seq_id = "tab"))
+```
+
+\n
+Table \@ref(tab:groupwiseMeansMassEstuaryTable) shows estimated cockle wet weight, by year class, for the combined estuary. arithmetic and bootstrap estimates are provided, as described for the table above.
+\n
+
+``` {r groupwiseMeansMassEstuaryTable, ft.align="center"}
+
+mass.confidence.intervals.estuary %>%
+  flextable() %>%
+  set_header_labels(year.class = "Year Class", total.mean = "Arithmetic mean Tonnes", percent = "Percentage", total.boot.mean = "Bootstrap mean Tonnes", mass.lower = "Lower CI Tonnes", mass.upper = "Upper CI Tonnes") %>%
+  colformat_double(digits = 0) %>%
+  autofit() %>%
+  fit_to_width(7.5) %>%
+set_caption(caption = as_paragraph("Summary of estimated total cockle wet weight (mean and 95% confidence intervals (BCa)) - combined estuary totals, by year class (and one size class)."), 
+  style = "Table Caption", 
+  autonum = run_autonum(seq_id = "tab"))
+```
+
+## Cockle counts and weights – for individual beds
+
+Table \@ref(tab:groupwiseMeansCountBedsTable) shows estimated mean cockle density, by year class, for individual beds. arithmetic and bootstrap estimates are provided, as described for the tables above.
+
+``` {r groupwiseMeansCountBedsTable, ft.align="center"}
+
+count.intervals.beds.metre %>%
+  flextable() %>%
+  set_header_labels(year.class = "Year Class", Block = "Bed", total.mean = "Arithmetic mean density/ m2", total.bootstrap.mean = "Bootstrap mean density/ m2", count.lower = "Lower CI density/ m2", count.upper = "Upper CI density/ m2") %>%
+  colformat_double(digits = 0) %>%
+  autofit() %>%
+  fit_to_width(7.5) %>%
+set_caption(caption = as_paragraph("Summary of estimated cockle density (mean and 95% confidence intervals (BCa)) – by bed and year class"), 
+  style = "Table Caption", 
+  autonum = run_autonum(seq_id = "tab"))
+```
+
+Table \@ref(tab:groupwiseMeansMassBedsTable) shows estimated total cockle wet weight, by year class, for individual beds. arithmetic and bootstrap estimates are provided, as described for the tables above.
+
+``` {r groupwiseMeansMassBedsTable, ft.align="center"}
+
+mass.intervals.beds.metre %>%
+  flextable() %>%
+  set_header_labels(year.class = "Year Class", Block = "Bed", total.mean = "Arithmetic mean Tonnes", total.boot.mean = "Bootstrap mean Tonnes", mass.lower = "Lower CI Tonnes", mass.upper = "Upper CI Tonnes") %>%
+  colformat_double(digits = 0) %>%
+  autofit() %>%
+  fit_to_width(7.5) %>%
+set_caption(caption = as_paragraph("Summary of estimated total cockle wet weight (mean and 95% confidence intervals (BCa)) - by bed and year class (and one size class)."), 
+  style = "Table Caption", 
+  autonum = run_autonum(seq_id = "tab"))
+```
+
+## Cockle size - frequency distributions
+
+The histogram plots in Figure \@ref(fig:densityHistogramBedsPlot) below show the size - frequency distribution of each year class of cockle in each of the defined beds. Mean shell lengths for each bed and year class are given in Table \@ref(tab:medianLengthsSummaryTable).
+
+``` {r densityHistogramBedsPlot, fig.cap = "Three Rivers cockle size – frequency distribution plots, by bed. Dashed lines indicate mean size for each year class", fig.align = "center", fig.dim = c(8,8), dpi = 200, fig.topcaption=TRUE}
+
+density.histogram.beds.plot
+```
+
+``` {r medianLengthsSummaryTable, ft.align="center"}
+
+mu %>%
+  flextable() %>%
+  set_header_labels(temp.class = "Year class", temp.block = "Bed", grp.mean = "Mean Shell length (mm)") %>%
+  colformat_double(digits = 1) %>%
+  autofit() %>%
+  fit_to_width(7.5) %>%
+set_caption(caption = as_paragraph("Mean cockle shell lengths, by bed and year class"), 
+  style = "Table Caption", 
+  autonum = run_autonum(seq_id = "tab"))
+```
+
+## Cockle counts and weights by size class
+
+Combining the April 2025 size – frequency data with detailed size – weight regression data (from previous Three River Estuary surveys) allows estimation of total cockle tonnage for any size class of cockles.
+Table \@ref(tab:llanybriFrequencyTable) provides calculated estimates of cockle density and wet weight for each size class. Columns 3, 6 and 8 provide reverse cumulative proportion, density and tonnage for all cockles greater than or equal to the length given in column 1. For example: the estimated weight of cockles ≥ 15 mm in the Llan y Bri bed  = `r format(llanybri.frequency %>% slice(min(which(llanybri.frequency$length > 14))) %>% select(reverse.cumulative.mass) %>% pull(), digits = 3)` tonnes.
+
+### Llan y Bri
+
+``` {r llanybriFrequencyTable, ft.align="center"}
+
+llanybri.frequency %>%
+  mutate(percentage = rev.cum.freq * 100,
+         mass.metre.g = mass.metre * 1000) %>%
+  select(length, mass, percentage, count.metre, mass.metre.g, rev.cum.count.metre, mass.extrapolation, reverse.cumulative.mass) %>%
+  flextable() %>%
+  set_header_labels(length = "Length", mass = "Mass (g)", percentage = "Percentage ≥ length", count.metre = "Count/ m2", mass.metre.g = "Weight/ m2 (g)", rev.cum.count.metre = "Count/ m2 ≥ length", mass.extrapolation = "Tonnes", reverse.cumulative.mass = "Tonnes ≥ length") %>%
+  colformat_double(digits = 0) %>%
+  colformat_double(j = "mass",digits = 3) %>%
+  autofit() %>%
+  fit_to_width(7.5) %>%
+set_caption(caption = as_paragraph("Estimated cockle biomass at Llan y Bri based on cockle size - frequency"), 
+  style = "Table Caption", 
+  autonum = run_autonum(seq_id = "tab"))
+```
+
+### Llansteffan
+
+``` {r llansteffanFrequencyTable, ft.align="center"}
+
+llansteffan.frequency %>%
+  mutate(percentage = rev.cum.freq * 100,
+         mass.metre.g = mass.metre * 1000) %>%
+  select(length, mass, percentage, count.metre, mass.metre.g, rev.cum.count.metre, mass.extrapolation, reverse.cumulative.mass) %>%
+  flextable() %>%
+  set_header_labels(length = "Length", mass = "Mass (g)", percentage = "Percentage ≥ length", count.metre = "Count/ m2", mass.metre.g = "Weight/ m2 (g)", rev.cum.count.metre = "Count/ m2 ≥ length", mass.extrapolation = "Tonnes", reverse.cumulative.mass = "Tonnes ≥ length") %>%
+  colformat_double(digits = 0) %>%
+  colformat_double(j = "mass",digits = 3) %>%
+  autofit() %>%
+  fit_to_width(7.5) %>%
+set_caption(caption = as_paragraph("Estimated cockle biomass at Llansteffan based on cockle size - frequency"), 
+  style = "Table Caption", 
+  autonum = run_autonum(seq_id = "tab"))
+```
+
+### Ferryside
+
+``` {r ferrysideFrequencyTable, ft.align="center"}
+
+ferryside.frequency %>%
+  mutate(percentage = rev.cum.freq * 100,
+         mass.metre.g = mass.metre * 1000) %>%
+  select(length, mass, percentage, count.metre, mass.metre.g, rev.cum.count.metre, mass.extrapolation, reverse.cumulative.mass) %>%
+  flextable() %>%
+  set_header_labels(length = "Length", mass = "Mass (g)", percentage = "Percentage ≥ length", count.metre = "Count/ m2", mass.metre.g = "Weight/ m2 (g)", rev.cum.count.metre = "Count/ m2 ≥ length", mass.extrapolation = "Tonnes", reverse.cumulative.mass = "Tonnes ≥ length") %>%
+  colformat_double(digits = 0) %>%
+  colformat_double(j = "mass",digits = 3) %>%
+  autofit() %>%
+  fit_to_width(7.5) %>%
+set_caption(caption = as_paragraph("Estimated cockle biomass at Ferryside based on cockle size - frequency"), 
+  style = "Table Caption", 
+  autonum = run_autonum(seq_id = "tab"))
+```
+
+### St Ishmaels
+
+``` {r ishmaelsFrequencyTable, ft.align="center"}
+
+ishmaels.frequency %>%
+  mutate(percentage = rev.cum.freq * 100,
+         mass.metre.g = mass.metre * 1000) %>%
+  select(length, mass, percentage, count.metre, mass.metre.g, rev.cum.count.metre, mass.extrapolation, reverse.cumulative.mass) %>%
+  flextable() %>%
+  set_header_labels(length = "Length", mass = "Mass (g)", percentage = "Percentage ≥ length", count.metre = "Count/ m2", mass.metre.g = "Weight/ m2 (g)", rev.cum.count.metre = "Count/ m2 ≥ length", mass.extrapolation = "Tonnes", reverse.cumulative.mass = "Tonnes ≥ length") %>%
+  colformat_double(digits = 0) %>%
+  colformat_double(j = "mass",digits = 3) %>%
+  autofit() %>%
+  fit_to_width(7.5) %>%
+set_caption(caption = as_paragraph("Estimated cockle biomass at St. Ishmaels based on cockle size - frequency"), 
+  style = "Table Caption", 
+  autonum = run_autonum(seq_id = "tab"))
+```
+
+### Gwendraeth
+
+``` {r gwendraethFrequencyTable, ft.align="center"}
+
+gwendraeth.frequency %>%
+  mutate(percentage = rev.cum.freq * 100,
+         mass.metre.g = mass.metre * 1000) %>%
+  select(length, mass, percentage, count.metre, mass.metre.g, rev.cum.count.metre, mass.extrapolation, reverse.cumulative.mass) %>%
+  flextable() %>%
+  set_header_labels(length = "Length", mass = "Mass (g)", percentage = "Percentage ≥ length", count.metre = "Count/ m2", mass.metre.g = "Weight/ m2 (g)", rev.cum.count.metre = "Count/ m2 ≥ length", mass.extrapolation = "Tonnes", reverse.cumulative.mass = "Tonnes ≥ length") %>%
+  colformat_double(digits = 0) %>%
+  colformat_double(j = "mass",digits = 3) %>%
+  autofit() %>%
+  fit_to_width(7.5) %>%
+set_caption(caption = as_paragraph("Estimated cockle biomass at Gwendraeth based on cockle size - frequency"), 
+  style = "Table Caption", 
+  autonum = run_autonum(seq_id = "tab"))
+```
+
+
+# Final summary and recommendations
+
+Table \@ref(tab:finalSummaryTable) provides a summary of selected data required by Welsh Government for each bed
+
+``` {r finalSummaryTable, ft.align="center"}
+
+summary.table %>%
+  select(-c(total.mass,total.count)) %>%
+  flextable() %>%
+  set_header_labels(Block = "Bed", mean.length = "Mean shell length (mm)", mean.mass = "Mean shell mass (g)", stations.sampled = "No. of stations", area.hectares = "Area (hec.)", count.metre = "Count/ sq.m", mass.metre = "Mass/ sq.m", total.mean = "Tonnes mean", mass.lower = "Lower CI", mass.upper = "Upper CI") %>%
+  colformat_double(digits = 0) %>%
+  colformat_double(j = "mean.length",digits = 1) %>%
+  colformat_double(j = "mean.mass",digits = 2) %>%
+  colformat_double(j = "mass.metre",digits = 2) %>%
+  autofit() %>%
+  fit_to_width(7.5) %>%
+set_caption(caption = as_paragraph("Final summary table"), 
+  style = "Table Caption", 
+  autonum = run_autonum(seq_id = "tab"))
+```
+
+
+Note: all of the data tables shown above are exported as CSV files and are available on request.
+
+The full report will include distribution maps output from QGIS for spatial analysis
+
+
